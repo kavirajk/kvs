@@ -13,7 +13,7 @@ use std::time;
 pub const DEFAULT_LOG_NAME: &'static str = "kv.log";
 
 pub struct KvStore {
-    index: HashMap<String, String>,
+    pub index: HashMap<String, usize>,
     log: PathBuf,
 }
 
@@ -71,10 +71,12 @@ impl KvStore {
         // so that 'get' or 'set' can assume that file already exists.
         OpenOptions::new().write(true).create(true).open(&p)?;
 
-        let kv = KvStore {
+        let mut kv = KvStore {
             index: HashMap::new(),
             log: p,
         };
+
+        kv.fill_index()?;
         Ok(kv)
     }
 
@@ -82,11 +84,15 @@ impl KvStore {
     ///
     /// If the key already exists, the previous value will be overwritten.
     pub fn set(&mut self, key: String, val: String) -> Result<()> {
-        let cmd = KvCommand::Set(key, val);
+        let cmd = KvCommand::Set(key.clone(), val);
 
         let mut f = OpenOptions::new().append(true).open(&self.log)?;
 
+        let offset = f.seek(SeekFrom::End(0))?;
+
         serde_json::to_writer(&mut f, &cmd)?;
+
+        self.index.insert(key, offset as usize);
 
         Ok(())
     }
@@ -95,76 +101,94 @@ impl KvStore {
     ///
     /// Returns `None` if the given key does not exist.
     pub fn get(&self, k: String) -> Result<Option<String>> {
+        let entry = self.index.get(&k);
+
+        let mut offset: usize = 0;
+
+        match entry {
+            None => return Ok(None),
+            Some(v) => {
+                offset = *v;
+            }
+        }
+
         let mut f = OpenOptions::new().read(true).open(&self.log)?;
+
+        f.seek(SeekFrom::Start(offset as u64));
 
         let de = serde_json::Deserializer::from_reader(&mut f);
 
         let mut stream = de.into_iter::<KvCommand>();
 
-        let mut map = HashMap::new();
-
-        loop {
-            match stream.next() {
-                Some(cmd) => {
-                    let cmd = cmd?;
-                    match cmd {
-                        KvCommand::Set(k, v) => {
-                            map.insert(k, v);
-                        }
-                        KvCommand::Remove(k) => {
-                            map.remove(&k);
-                        }
-                    }
+        match stream.next() {
+            None => {
+                return Err(KvError {
+                    msg: format!("value not found in the offset: {}", offset),
+                })
+            }
+            Some(cmd) => {
+                let cmd = cmd?;
+                if let KvCommand::Set(_, v) = cmd {
+                    return Ok(Some(v));
                 }
-                None => break,
             }
         }
 
-        if !map.contains_key(&k) {
-            return Ok(None);
-        }
-
-        Ok(map.get(&k).and_then(|x| Some(x.clone())))
+        return Err(KvError {
+            msg: format!("remove command at the offset: {}", offset),
+        });
     }
 
     /// Remove a given key.
     pub fn remove(&mut self, k: String) -> Result<()> {
-        let mut f = OpenOptions::new().read(true).open(&self.log)?;
+        let entry = self.index.get(&k);
 
-        let de = serde_json::Deserializer::from_reader(&mut f);
-
-        let mut stream = de.into_iter::<KvCommand>();
-
-        let mut map = HashMap::new();
-
-        loop {
-            match stream.next() {
-                Some(cmd) => {
-                    let cmd = cmd?;
-                    match cmd {
-                        KvCommand::Set(k, v) => {
-                            map.insert(k, v);
-                        }
-                        KvCommand::Remove(k) => {
-                            map.remove(&k);
-                        }
-                    }
-                }
-                None => break,
+        match entry {
+            None => {
+                return Err(KvError {
+                    msg: "Key not found".to_owned(),
+                })
             }
+            Some(_) => {}
         }
-
-        if !map.contains_key(&k) {
-            return Err(KvError {
-                msg: "Key not found".to_owned(),
-            });
-        };
 
         let cmd = KvCommand::Remove(k.clone());
 
         let mut f = OpenOptions::new().append(true).open(&self.log)?;
 
         serde_json::to_writer(&mut f, &cmd)?;
+
+        self.index.remove(&k);
+
+        Ok(())
+    }
+
+    fn fill_index(&mut self) -> Result<()> {
+        let mut f = OpenOptions::new().read(true).open(&self.log)?;
+
+        let de = serde_json::Deserializer::from_reader(&mut f);
+
+        let mut stream = de.into_iter::<KvCommand>();
+
+        let mut offset = stream.byte_offset();
+
+        loop {
+            match stream.next() {
+                Some(cmd) => {
+                    let cmd = cmd?;
+                    match cmd {
+                        KvCommand::Set(k, _) => {
+                            self.index.insert(k, offset);
+                            offset = stream.byte_offset();
+                        }
+                        KvCommand::Remove(k) => {
+                            self.index.remove(&k);
+                        }
+                    }
+                }
+                None => break,
+            }
+        }
         Ok(())
     }
 }
