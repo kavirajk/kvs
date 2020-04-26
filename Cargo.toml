@@ -9,7 +9,11 @@ edition = "2018"
 
 [dependencies]
 clap = "2.32.0"
+serde = "1.0.106"
+serde_json = "1.0.51"
 
 [dev-dependencies]
 assert_cmd = "0.11.0"
 predicates = "1.0.0"
+tempfile = "3.1.0"
+walkdir = "2.3.1"

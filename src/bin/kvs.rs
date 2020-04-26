@@ -1,7 +1,9 @@
 use clap::{App, AppSettings, Arg, SubCommand};
+use kvs::{KvError, KvStore, DEFAULT_LOG_NAME};
+use std::error::Error;
 use std::process::exit;
 
-fn main() {
+fn main() -> Result<(), KvError> {
     let matches = App::new(env!("CARGO_PKG_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
         .author(env!("CARGO_PKG_AUTHORS"))
@@ -31,14 +33,41 @@ fn main() {
         )
         .get_matches();
 
+    let mut kv = KvStore::open(DEFAULT_LOG_NAME)?;
+
     match matches.subcommand() {
-        ("get", Some(_matches)) => {
-            eprintln!("unimplemented");
+        ("get", Some(matches)) => {
+            let mut values = matches.values_of("KEY").unwrap();
+            let key = values.next().unwrap();
+
+            match kv.get(key.to_owned())? {
+                Some(v) => {
+                    println!("{}", v);
+                }
+                None => println!("Key not found"),
+            }
         }
-        ("set", Some(_matches)) => eprintln!("unimplemented"),
-        ("rm", Some(_matches)) => eprintln!("unimplemented"),
+        ("set", Some(matches)) => {
+            let mut values = matches.values_of("KEY").unwrap();
+
+            let key = values.next().unwrap();
+
+            let mut values = matches.values_of("VALUE").unwrap();
+            let val = values.next().unwrap();
+
+            kv.set(key.to_owned(), val.to_owned())?;
+        }
+        ("rm", Some(matches)) => {
+            let mut values = matches.values_of("KEY").unwrap();
+            let key = values.next().unwrap();
+
+            if let Err(e) = kv.remove(key.to_owned()) {
+                println!("{}", e);
+                exit(1);
+            }
+        }
         _ => unreachable!(),
     }
 
-    exit(1)
+    Ok(())
 }
