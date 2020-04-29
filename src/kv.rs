@@ -2,13 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
-use std::fs::{File, OpenOptions};
+use std::fs::{rename, OpenOptions};
 use std::io;
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::io::{Seek, SeekFrom};
+use std::path::PathBuf;
 use std::result;
-use std::thread;
-use std::time;
 
 pub const DEFAULT_LOG_NAME: &'static str = "kv.log";
 
@@ -84,6 +82,11 @@ impl KvStore {
     ///
     /// If the key already exists, the previous value will be overwritten.
     pub fn set(&mut self, key: String, val: String) -> Result<()> {
+        let f = OpenOptions::new().read(true).open(&self.log)?;
+        if f.metadata()?.len() > (1 << 10) * 30 {
+            self.compact()?;
+        }
+
         let cmd = KvCommand::Set(key.clone(), val);
 
         let mut f = OpenOptions::new().append(true).open(&self.log)?;
@@ -189,6 +192,42 @@ impl KvStore {
                 None => break,
             }
         }
+        Ok(())
+    }
+
+    fn compact(&mut self) -> Result<()> {
+        let tmp = &self.log.parent().unwrap(); // shouldn't panic!
+
+        let tmp = tmp.join("kvs.comp");
+
+        let mut f = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(true)
+            .open(&tmp)?;
+
+        let mut tmap: HashMap<String, usize> = HashMap::new();
+
+        let mut currf = OpenOptions::new().read(true).open(&self.log)?;
+
+        let mut new_offset: u64 = 0;
+
+        for (k, offset) in self.index.iter() {
+            currf.seek(SeekFrom::Start(*offset as u64))?;
+            let de = serde_json::Deserializer::from_reader(&currf);
+            let mut stream = de.into_iter::<KvCommand>();
+            let cmd = stream.next().unwrap().unwrap(); // shouldn't panic
+
+            serde_json::to_writer(&mut f, &cmd)?;
+            tmap.insert(k.to_owned(), new_offset as usize);
+
+            new_offset = f.seek(SeekFrom::End(0))?;
+        }
+
+        // atomic steps
+        rename(&tmp, &self.log)?;
+        self.index = tmap;
+
         Ok(())
     }
 }
