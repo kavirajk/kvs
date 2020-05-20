@@ -1,5 +1,8 @@
-// #![deny(missing_docs)]
+#![deny(missing_docs)]
 //! A simple key/value store.
-pub use kv::{KvError, KvStore, Result, DEFAULT_LOG_NAME};
 
+pub use error::{KvsError, Result};
+pub use kv::KvStore;
+
+mod error;
 mod kv;
